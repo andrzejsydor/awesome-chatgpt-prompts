@@ -1,3 +1,35 @@
+// Sidebar toggle functionality
+function initializeSidebarToggle() {
+  const toggle = document.querySelector(".sidebar-toggle");
+  if (!toggle) return;
+
+  const body = document.body;
+  const collapseIcon = toggle.querySelector(".collapse-icon");
+  const expandIcon = toggle.querySelector(".expand-icon");
+  const stored = localStorage.getItem("sidebar-collapsed");
+  const isCollapsed = stored === "true";
+
+  if (isCollapsed) {
+    body.classList.add("sidebar-collapsed");
+    toggle.setAttribute("aria-expanded", "false");
+    collapseIcon.style.display = "none";
+    expandIcon.style.display = "block";
+  } else {
+    toggle.setAttribute("aria-expanded", "true");
+    collapseIcon.style.display = "block";
+    expandIcon.style.display = "none";
+  }
+
+  toggle.addEventListener("click", () => {
+    const nowCollapsed = !body.classList.contains("sidebar-collapsed");
+    body.classList.toggle("sidebar-collapsed", nowCollapsed);
+    localStorage.setItem("sidebar-collapsed", nowCollapsed ? "true" : "false");
+    toggle.setAttribute("aria-expanded", nowCollapsed ? "false" : "true");
+    collapseIcon.style.display = nowCollapsed ? "none" : "block";
+    expandIcon.style.display = nowCollapsed ? "block" : "none";
+  });
+}
+
 // Dark mode functionality
 function toggleDarkMode() {
   const body = document.body;
@@ -15,13 +47,23 @@ function toggleDarkMode() {
 
 // Add these new functions at the top
 function extractVariables(text) {
-  const regex = /\${([^}]+)}/g;
   const variables = [];
+  
+  // Extract ${var:default} format variables
+  const regex1 = /\${([^}]+)}/g;
   let match;
-
-  while ((match = regex.exec(text)) !== null) {
+  while ((match = regex1.exec(text)) !== null) {
     const [variable, defaultValue] = match[1].split(":").map((s) => s.trim());
     variables.push({ name: variable, default: defaultValue || "" });
+  }
+  
+  // Extract {{var}} format variables
+  const regex2 = /\{\{([^}]+)\}\}/g;
+  while ((match = regex2.exec(text)) !== null) {
+    const variable = match[1].trim();
+    if (!variables.some(v => v.name === variable)) {
+      variables.push({ name: variable, default: "" });
+    }
   }
 
   return [...new Set(variables.map((v) => JSON.stringify(v)))].map((v) =>
@@ -69,9 +111,14 @@ function updatePromptPreview(promptText, form) {
   // Replace variables with their default values without editting (for prompt cards, copy buttons, chat)
   if (!form) {
     variables.forEach(variable => {
-      const pattern = new RegExp(`\\$\{${variable.name}[^}]*\}`, 'g');
+      // Handle old-style ${var:default} format
+      const pattern1 = new RegExp(`\\$\{${variable.name}[^}]*\}`, 'g');
       const replacement = variable.default || `<b>${variable.name}</b>`;
-      previewText = previewText.replace(pattern, replacement);
+      previewText = previewText.replace(pattern1, replacement);
+      
+      // Handle new-style {{var}} format
+      const pattern2 = new RegExp(`\\{\\{${variable.name}\\}\\}`, 'g');
+      previewText = previewText.replace(pattern2, replacement);
     });
   }
   // Replace variables according to the user inputs.
@@ -82,7 +129,12 @@ function updatePromptPreview(promptText, form) {
       const value = input.value.trim();
       const variable = input.dataset.variable;
       const defaultValue = input.dataset.default;
-    const pattern = new RegExp(`\\$\{${variable}[^}]*\}`, 'g');
+      
+      // Handle old-style ${var:default} format
+      const pattern1 = new RegExp(`\\$\{${variable}[^}]*\}`, 'g');
+      // Handle new-style {{var}} format
+      const pattern2 = new RegExp(`\\{\\{${variable}\\}\\}`, 'g');
+      
       let replacement;
       if (value) {
         // User entered value
@@ -96,7 +148,8 @@ function updatePromptPreview(promptText, form) {
       }
       replacement = `<b>${replacement}</b>`;
 
-      previewText = previewText.replace(pattern, replacement);
+      previewText = previewText.replace(pattern1, replacement);
+      previewText = previewText.replace(pattern2, replacement);
     });
   }
   return previewText;
@@ -144,7 +197,7 @@ document.addEventListener("DOMContentLoaded", () => {
     })
     .catch((error) => {
       console.error("Error fetching star count:", error);
-      document.getElementById("starCount").textContent = "50k+";
+      document.getElementById("starCount").textContent = "129k+";
     });
 
   // Create prompt cards
@@ -176,6 +229,11 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Initialize language and tone selectors
   initializeLanguageAndTone();
+
+  // Initialize sidebar toggle
+  initializeSidebarToggle();
+
+  filterPrompts();
 });
 
 // Search functionality
@@ -253,14 +311,45 @@ function parseCSV(csv) {
     .split(",")
     .map((header) => header.replace(/"/g, "").trim());
 
+  // Helper function to properly parse CSV line with quoted fields
+  function parseCSVLine(line) {
+    const values = [];
+    let current = '';
+    let inQuotes = false;
+    
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+      const nextChar = line[i + 1];
+      
+      if (char === '"' && !inQuotes) {
+        inQuotes = true;
+      } else if (char === '"' && inQuotes) {
+        if (nextChar === '"') {
+          // Escaped quote
+          current += '"';
+          i++; // Skip next quote
+        } else {
+          inQuotes = false;
+        }
+      } else if (char === ',' && !inQuotes) {
+        values.push(current.trim());
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+    values.push(current.trim());
+    return values;
+  }
+
   return lines
     .slice(1)
     .map((line) => {
-      const values = line.match(/(".*?"|[^",\s]+)(?=\s*,|\s*$)/g) || [];
+      const values = parseCSVLine(line);
       const entry = {};
 
       headers.forEach((header, index) => {
-        let value = values[index] ? values[index].replace(/"/g, "").trim() : "";
+        let value = values[index] ? values[index].trim() : "";
         // Remove backticks from the act/title
         if (header === "act") {
           value = value.replace(/`/g, "");
@@ -269,12 +358,83 @@ function parseCSV(csv) {
         if (header === "for_devs") {
           value = value.toUpperCase() === "TRUE";
         }
+        // Default type to TEXT if not specified
+        if (header === "type" && !value) {
+          value = "TEXT";
+        }
         entry[header] = value;
       });
+
+      // Ensure type defaults to TEXT if not present
+      if (!entry.type) {
+        entry.type = "TEXT";
+      }
 
       return entry;
     })
     .filter((entry) => entry.act && entry.prompt);
+}
+
+// Format JSON with syntax highlighting
+function formatJsonWithHighlighting(jsonString) {
+  try {
+    // Clean up the JSON string - replace curly quotes with straight quotes
+    let cleanedJson = jsonString
+      .replace(/[\u201C\u201D]/g, '"')  // Replace curly double quotes
+      .replace(/[\u2018\u2019]/g, "'")  // Replace curly single quotes
+      .replace(/“/g, '"')               // Replace left double quote
+      .replace(/”/g, '"');               // Replace right double quote
+      // .replace(/\n/g, '\\n');           // Replace newlines
+
+    // Try to parse and re-format the JSON
+    const parsed = JSON.parse(cleanedJson);
+    const formatted = JSON.stringify(parsed, null, 2);
+    
+    // Apply syntax highlighting
+    return formatted
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?)/g, (match) => {
+        let cls = 'json-string';
+        if (/:$/.test(match)) {
+          cls = 'json-key';
+          match = match.replace(/:$/, '');
+          return `<span class="${cls}">${match}</span>:`;
+        }
+        return `<span class="${cls}">${match}</span>`;
+      })
+      .replace(/\b(true|false)\b/g, '<span class="json-boolean">$1</span>')
+      .replace(/\b(null)\b/g, '<span class="json-null">$1</span>')
+      .replace(/\b(-?\d+\.?\d*)\b/g, '<span class="json-number">$1</span>');
+  } catch (e) {
+    // If JSON parsing fails, try to format it as-is with basic highlighting
+    console.warn('JSON parsing failed:', e.message);
+    return jsonString
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+}
+
+// Check if a string is valid JSON
+function isValidJson(str) {
+  try {
+    // First try to parse as-is
+    JSON.parse(str);
+    return true;
+  } catch (e) {
+    // If that fails, try to clean it up and parse again
+    try {
+      const cleaned = str
+        .replace(/[\u201C\u201D]/g, '"')  // Replace curly double quotes
+        .replace(/[\u2018\u2019]/g, "'"); // Replace curly single quotes
+      JSON.parse(cleaned);
+      return true;
+    } catch (e2) {
+      return false;
+    }
+  }
 }
 
 function displaySearchResults(results) {
@@ -353,7 +513,7 @@ function displaySearchResults(results) {
           // On mobile, scroll the window
           const cardRect = targetCard.getBoundingClientRect();
           const scrollTop =
-            window.pageYOffset + cardRect.top - headerHeight - 20;
+            window.pageYOffset + cardRect.top - headerHeight - 50;
 
           window.scrollTo({
             top: scrollTop,
@@ -364,7 +524,7 @@ function displaySearchResults(results) {
           const mainContent = document.querySelector(".main-content");
           const cardRect = targetCard.getBoundingClientRect();
           const scrollTop =
-            mainContent.scrollTop + cardRect.top - headerHeight - 20;
+            mainContent.scrollTop + cardRect.top - headerHeight - 50;
 
           mainContent.scrollTo({
             top: scrollTop,
@@ -556,14 +716,37 @@ function createPromptCards() {
           card.style.display = "none";
         }
 
+        // Determine prompt type from CSV data
+        const promptType = matchingPrompt && matchingPrompt.type ? matchingPrompt.type : 'TEXT';
+        const isJsonPrompt = promptType === 'JSON';
+        
+        // Render content based on type
+        let renderedContent;
+        if (isJsonPrompt) {
+          renderedContent = `<pre class="json-content">${formatJsonWithHighlighting(content)}</pre>`;
+        } else {
+          renderedContent = `<p class="prompt-content">${updatePromptPreview(content)}</p>`;
+        }
+
+        // JSON icon HTML - only show for JSON prompts
+        const jsonIconHtml = isJsonPrompt ? `
+            <span class="prompt-json-icon" title="JSON Prompt">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M8 3H7a2 2 0 0 0-2 2v5a2 2 0 0 1-2 2 2 2 0 0 1 2 2v5c0 1.1.9 2 2 2h1"></path>
+                    <path d="M16 3h1a2 2 0 0 1 2 2v5a2 2 0 0 0 2 2 2 2 0 0 0-2 2v5a2 2 0 0 1-2 2h-1"></path>
+                </svg>
+            </span>
+        ` : '';
+
         card.innerHTML = `
         <div class="prompt-title">
             ${title}
             <div class="action-buttons">
+            ${jsonIconHtml}
             <button class="chat-button" title="Open in AI Chat" onclick="openInChat(this, '${encodeURIComponent(
-              updatePromptPreview(content.trim())
+              isJsonPrompt ? content.trim() : updatePromptPreview(content.trim())
             )}')">
-                <svg class="chat-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <svg class="chat-icon"xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
                 </svg>
                 <svg class="terminal-icon" style="display: none;" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -571,8 +754,17 @@ function createPromptCards() {
                 <line x1="12" y1="19" x2="20" y2="19"></line>
                 </svg>
             </button>
+            <button class="yaml-button" title="Show prompt.yml format" onclick="showYamlModal(event, '${encodeURIComponent(title)}', '${encodeURIComponent(content)}')">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                <polyline points="14 2 14 8 20 8"></polyline>
+                <line x1="16" y1="13" x2="8" y2="13"></line>
+                <line x1="16" y1="17" x2="8" y2="17"></line>
+                <polyline points="10 9 9 9 8 9"></polyline>
+                </svg>
+            </button>
             <button class="copy-button" title="Copy prompt" onclick="copyPrompt(this, '${encodeURIComponent(
-              updatePromptPreview(content.trim())
+              isJsonPrompt ? content.trim() : updatePromptPreview(content.trim())
             )}')">
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path>
@@ -581,7 +773,7 @@ function createPromptCards() {
             </button>
             </div>
         </div>
-        <p class="prompt-content">${updatePromptPreview(content)}</p>
+        ${renderedContent}
         <a href="https://github.com/${contributor}" class="contributor-badge" target="_blank" rel="noopener">@${contributor}</a>
         `;
 
@@ -589,32 +781,10 @@ function createPromptCards() {
         card.addEventListener("click", (e) => {
           if (
             !e.target.closest(".copy-button") &&
-            !e.target.closest(".contributor-badge")
+            !e.target.closest(".contributor-badge") &&
+            !e.target.closest(".yaml-button")
           ) {
-            showModal(title, content);
-          }
-        });
-
-        const copyButton = card.querySelector(".copy-button");
-        copyButton.addEventListener("click", async (e) => {
-          e.stopPropagation();
-          try {
-            await navigator.clipboard.writeText(updatePromptPreview(content));
-            copyButton.innerHTML = `
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <polyline points="20 6 9 17 4 12"></polyline>
-            </svg>
-            `;
-            setTimeout(() => {
-              copyButton.innerHTML = `
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-                </svg>
-            `;
-            }, 2000);
-          } catch (err) {
-            alert("Failed to copy prompt to clipboard");
+            showModal(title, content, promptType);
           }
         });
 
@@ -650,6 +820,14 @@ function initializeModalListeners() {
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     hideModal();
+    
+    // Also hide YAML modal if it exists
+    const yamlModal = document.getElementById("yamlModalOverlay");
+    if (yamlModal) {
+      yamlModal.style.display = "none";
+      document.body.style.overflow = "";
+      yamlModal.remove();
+    }
   }
 });
 
@@ -680,6 +858,21 @@ function createModal() {
             <a class="modal-contributor" target="_blank" rel="noopener"></a>
         </div>
         <div class="modal-footer-right">
+            <button class="modal-embed-button" onclick="openEmbedDesigner()">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="4" y="4" width="16" height="16" rx="2"></rect>
+                <rect x="9" y="9" width="6" height="6"></rect>
+                <path d="M15 2v2"></path>
+                <path d="M15 20v2"></path>
+                <path d="M2 15h2"></path>
+                <path d="M20 15h2"></path>
+                <path d="M2 9h2"></path>
+                <path d="M20 9h2"></path>
+                <path d="M9 2v2"></path>
+                <path d="M9 20v2"></path>
+            </svg>
+            Embed
+            </button>
             <button class="modal-chat-button" onclick="openModalChat()">
             <svg class="chat-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
@@ -700,7 +893,7 @@ function createModal() {
 }
 
 // Modify the existing showModal function
-function showModal(title, content) {
+function showModal(title, content, promptType = 'TEXT') {
   let modalOverlay = document.getElementById("modalOverlay");
   if (!modalOverlay) {
     createModal();
@@ -709,12 +902,15 @@ function showModal(title, content) {
 
   const modalTitle = modalOverlay.querySelector(".modal-title");
   const modalContent = modalOverlay.querySelector(".modal-content");
+  
+  // Check if this is a JSON prompt
+  const isJsonPrompt = promptType === 'JSON' || isValidJson(content);
 
   // Extract variables from content
   const variables = extractVariables(content);
 
-  // Create variable inputs container if variables exist
-  if (variables.length > 0) {
+  // Create variable inputs container if variables exist (only for TEXT prompts)
+  if (variables.length > 0 && !isJsonPrompt) {
     const variableContainer = document.createElement("div");
     variableContainer.className = "variable-container";
 
@@ -738,6 +934,10 @@ function showModal(title, content) {
 
     // Insert variable container before content
     modalContent.parentElement.insertBefore(variableContainer, modalContent);
+  } else if (isJsonPrompt) {
+    // Render JSON content with syntax highlighting
+    modalTitle.textContent = title;
+    modalContent.innerHTML = `<pre class="json-content modal-json">${formatJsonWithHighlighting(content)}</pre>`;
   } else {
     modalTitle.textContent = title;
     modalContent.textContent = content;
@@ -906,6 +1106,7 @@ function openInChat(button, encodedPrompt) {
   if (!platform) return;
 
   const baseUrl = platform.dataset.url;
+  console.log(baseUrl);
   let url;
 
   switch (platform.dataset.platform) {
@@ -914,6 +1115,9 @@ function openInChat(button, encodedPrompt) {
       break;
     case "chatgpt":
       url = `${baseUrl}?prompt=${encodeURIComponent(promptText)}`;
+      break;
+    case "grok":
+      url = `${baseUrl}&q=${encodeURIComponent(promptText)}`;
       break;
     case "claude":
       url = `${baseUrl}?q=${encodeURIComponent(promptText)}`;
@@ -933,7 +1137,48 @@ function openInChat(button, encodedPrompt) {
 
 function buildPrompt(encodedPrompt) {
   let promptText = decodeURIComponent(encodedPrompt);
+  
+  // Check if this is a JSON prompt
+  const isJsonPrompt = isValidJson(promptText);
 
+  // Get language, tone and audience preferences (shared for both JSON and TEXT)
+  const languageSelect = document.getElementById('languageSelect');
+  const customLanguage = document.getElementById('customLanguage');
+  const toneSelect = document.getElementById('toneSelect');
+  const customTone = document.getElementById('customTone');
+  const audienceSelect = document.getElementById('audienceSelect');
+
+  const language = languageSelect.value === 'custom' ? customLanguage.value : languageSelect.value;
+  const tone = toneSelect.value === 'custom' ? customTone.value : toneSelect.value;
+  const audience = audienceSelect.value;
+
+  // Handle JSON prompts differently
+  if (isJsonPrompt) {
+    try {
+      // Clean up curly quotes if present
+      let cleanedJson = promptText
+        .replace(/[\u201C\u201D]/g, '"')
+        .replace(/[\u2018\u2019]/g, "'");
+      
+      const data = JSON.parse(cleanedJson);
+      
+      // Add preferences as a structured JSON object
+      data.preferences = {
+        language: language,
+        tone: tone,
+        for_developers: audience === 'developers'
+      };
+      
+      // Return prettified JSON
+      return JSON.stringify(data, null, 2);
+    } catch (e) {
+      console.warn('Failed to merge preferences into JSON prompt:', e);
+      // Fallback: return original prompt if JSON parsing fails
+      return promptText;
+    }
+  }
+
+  // TEXT prompt handling (existing logic)
   // If there's a modal open, use the current state of variables
   const modalContent = document.querySelector(".modal-content");
   if (modalContent) {
@@ -957,18 +1202,7 @@ function buildPrompt(encodedPrompt) {
   // Clean up newlines and normalize whitespace
   promptText = promptText.replace(/\s+/g, ' ').trim();
 
-  // Get language, tone and audience preferences
-  const languageSelect = document.getElementById('languageSelect');
-  const customLanguage = document.getElementById('customLanguage');
-  const toneSelect = document.getElementById('toneSelect');
-  const customTone = document.getElementById('customTone');
-  const audienceSelect = document.getElementById('audienceSelect');
-
-  const language = languageSelect.value === 'custom' ? customLanguage.value : languageSelect.value;
-  const tone = toneSelect.value === 'custom' ? customTone.value : toneSelect.value;
-  const audience = audienceSelect.value;
-
-  // Append preferences as a new line
+  // Append preferences as a new line for TEXT prompts
   promptText += ` Reply in ${language} using ${tone} tone for ${audience}.`;
 
   return promptText;
@@ -999,6 +1233,28 @@ function openModalChat() {
   if (modalContent) {
     const content = modalContent.textContent;
     openInChat(null, encodeURIComponent(content.trim()));
+  }
+}
+
+// Function to handle embed button click in modal
+function openEmbedDesigner() {
+  const modalContent = document.querySelector(".modal-content");
+  if (modalContent) {
+    let content = modalContent.textContent || modalContent.innerText;
+    
+    // If there's a variable form, get the processed content with variables
+    const form = document.querySelector(".variable-form");
+    if (form) {
+      content = buildPrompt(encodeURIComponent(content.trim()));
+      // Remove the added language/tone preferences for embed
+      content = content.replace(/\s*Reply in .+ using .+ tone for .+\.$/, '').trim();
+    }
+    
+    // Build the embed URL
+    const embedUrl = `/embed/?prompt=${encodeURIComponent(content)}&context=https://prompts.chat&model=gpt-4o&agentMode=chat&thinking=false&max=false&height=400`;
+    
+    // Open in new tab
+    window.open(embedUrl, '_blank');
   }
 }
 
@@ -1121,4 +1377,146 @@ function initializeLanguageAndTone() {
   customTone.addEventListener('input', (e) => {
     localStorage.setItem('custom-tone', e.target.value);
   });
+}
+
+// Function to show a modal with YAML format and GitHub create button
+function showYamlModal(event, title, content) {
+  event.stopPropagation();
+  let modalOverlay = document.getElementById("yamlModalOverlay");
+  if (!modalOverlay) {
+    const modalHTML = `
+      <div class="modal-overlay" id="yamlModalOverlay">
+      <div class="modal">
+          <div class="modal-header">
+          <h2 class="modal-title">Prompt YAML</h2>
+          <div class="modal-actions">
+              <button class="modal-copy-button" title="Copy YAML">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+              </svg>
+              </button>
+              <button class="modal-close" title="Close">
+              <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18"></line>
+                  <line x1="6" y1="6" x2="18" y2="18"></line>
+              </svg>
+              </button>
+          </div>
+          </div>
+          <div class="modal-content">
+            <pre class="yaml-content"></pre>
+          </div>
+          <div class="modal-footer">
+          <div class="modal-footer-left">
+              <span class="modal-hint">You can create a new <code>.prompt.yml</code> file in your GitHub repository.</span>
+          </div>
+          <div class="modal-footer-right">
+              <div class="github-form">
+                <div class="github-inputs">
+                  <input type="text" id="github-org" class="github-input" placeholder="Organization" value="">
+                  <span>/</span>
+                  <input type="text" id="github-repo" class="github-input" placeholder="Repository" value="">
+                  <span>#</span>
+                  <input type="text" id="github-branch" class="github-input" placeholder="Branch" value="main">
+                </div>
+                <button class="create-yaml-button">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"></path>
+                </svg>
+                Create .prompt.yml
+                </button>
+              </div>
+          </div>
+          </div>
+      </div>
+      </div>
+    `;
+    document.body.insertAdjacentHTML("beforeend", modalHTML);
+    modalOverlay = document.getElementById("yamlModalOverlay");
+    
+    // Add event listeners
+    const modalClose = modalOverlay.querySelector(".modal-close");
+    modalClose.addEventListener("click", () => {
+      modalOverlay.style.display = "none";
+      document.body.style.overflow = "";
+      modalOverlay.remove();
+    });
+    
+    modalOverlay.addEventListener("click", (e) => {
+      if (e.target === modalOverlay) {
+        modalOverlay.style.display = "none";
+        document.body.style.overflow = "";
+        modalOverlay.remove();
+      }
+    });
+  }
+
+  const yamlContent = modalOverlay.querySelector(".yaml-content");
+  const modalCopyButton = modalOverlay.querySelector(".modal-copy-button");
+  const createYamlButton = modalOverlay.querySelector(".create-yaml-button");
+  
+  // Create the YAML content
+  const cleanTitle = decodeURIComponent(title).trim().replace(/^Act as a?n?\s*/ig, '');
+  const cleanContent = decodeURIComponent(content).trim().replace(/\n+/g, ' ');
+  
+  // Convert variables from ${Variable: Default} format to {{Variable}} format
+  const convertedContent = cleanContent.replace(/\${([^:}]+)(?::[^}]*)?}/g, (match, varName) => {
+    return `{{${varName.trim()}}}`;
+  });
+  
+  const yamlText = `name: ${cleanTitle}
+model: gpt-4o-mini
+modelParameters:
+  temperature: 0.5
+messages:
+  - role: system
+    content: | 
+      ${convertedContent.replace(/\n/g, '\n      ')}`;
+  
+  // Apply basic syntax highlighting
+  const highlightedYaml = yamlText
+    .replace(/(name|model|modelParameters|temperature|messages|role|content):/g, '<span class="key">$1:</span>')
+    .replace(/(gpt-4o-mini)/g, '<span class="string">$1</span>')
+    .replace(/([0-9]\.?[0-9]*)/g, '<span class="number">$1</span>')
+    .replace(/(true|false)/g, '<span class="boolean">$1</span>')
+    .replace(/(\{\{[^}]+\}\})/g, '<span class="string">$1</span>'); // Highlight the new variable format
+  
+  yamlContent.innerHTML = highlightedYaml;
+  
+  // Add copy functionality - use the plain text version for clipboard
+  modalCopyButton.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(yamlText);
+      modalCopyButton.innerHTML = `
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="20 6 9 17 4 12"></polyline>
+        </svg>
+      `;
+      setTimeout(() => {
+        modalCopyButton.innerHTML = `
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+        </svg>
+        `;
+      }, 2000);
+    } catch (err) {
+      alert("Failed to copy YAML to clipboard");
+    }
+  });
+  
+  // Add create functionality
+  createYamlButton.addEventListener("click", () => {
+    const orgName = document.getElementById('github-org').value.trim();
+    const repoName = document.getElementById('github-repo').value.trim();
+    const branchName = document.getElementById('github-branch').value.trim();
+    const filename = cleanTitle.toLocaleLowerCase().replace(/\s+/g, '-') + '.prompt.yml';
+    const encodedYaml = encodeURIComponent(yamlText);
+    const githubUrl = `https://github.com/${orgName}/${repoName}/new/${branchName}?filename=${filename}&value=${encodedYaml}`;
+    window.open(githubUrl, '_blank');
+  });
+
+  modalOverlay.style.display = "block";
+  document.body.style.overflow = "hidden";
 }
